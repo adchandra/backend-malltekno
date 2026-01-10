@@ -86,35 +86,83 @@ function corsHeaders(origin="*"){ return {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };}
 
-export async function OPTIONS(){ return new Response(null,{ headers:corsHeaders() }); }
+export async function OPTIONS(){ return new Response(null,{ headers: corsHeaders() }); }
 
-export async function POST(req: Request){
-  try{
-    const body = await req.json().catch(()=> ({}));
+// --- helper panggil Gemini dgn fallback model & versi ---
+async function callGemini(apiKey: string, user: string, system: string) {
+  // urutan yang paling sering berhasil sekarang
+  const candidates = [
+    { ver: "v1",     model: process.env.GEMINI_MODEL || "gemini-1.5-flash-latest" },
+    { ver: "v1",     model: "gemini-1.5-flash-002" },
+    { ver: "v1",     model: "gemini-1.5-pro-latest" },
+    { ver: "v1beta", model: "gemini-1.5-flash" }, // fallback lama
+  ];
+
+  const payload = {
+    system_instruction: { role: "system", parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: String(user).slice(0, 800) }] }],
+    generation_config: { temperature: 0.2 }
+  };
+
+  let last = { status: 0, body: "" };
+
+  for (const c of candidates) {
+    const url = `https://generativelanguage.googleapis.com/${c.ver}/models/${c.model}:generateContent?key=${apiKey}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await r.text();
+    if (r.ok) return { ok: true, text };
+    last = { status: r.status, body: text };
+
+    // kalau 404 / NOT_FOUND, coba kandidat berikutnya
+    if (r.status !== 404 && !/NOT_FOUND/i.test(text)) break;
+  }
+  return { ok: false, text: last.body, status: last.status };
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({}));
     const user = typeof body.user === "string" ? body.user : "";
     const system = (typeof body.system === "string" && body.system.trim()) ? body.system : SYS_PROMPT;
-    if(!user) return new Response(JSON.stringify({ error:"Missing field: user"}),{ status:400, headers:{...corsHeaders(),"Content-Type":"application/json"} });
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-    const payload = {
-      system_instruction: { role:"system", parts:[{ text: system }] },
-      contents: [{ role:"user", parts:[{ text: String(user).slice(0,800) }] }],
-      generation_config: { temperature: 0.2 }
-    };
+    if (!user) {
+      return new Response(JSON.stringify({ error: "Missing field: user" }), {
+        status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      });
+    }
+    if (!process.env.GEMINI_API_KEY) {
+      return new Response(JSON.stringify({ error: "No GEMINI_API_KEY set" }), {
+        status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      });
+    }
 
-    const r = await fetch(endpoint, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
-    const txt = await r.text();
-    if(!r.ok) return new Response(JSON.stringify({ error:"upstream", status:r.status, detail:txt }), { status:r.status, headers:{...corsHeaders(),"Content-Type":"application/json"} });
+    const result = await callGemini(process.env.GEMINI_API_KEY, user, system);
+    if (!result.ok) {
+      return new Response(JSON.stringify({ error: "upstream", status: result.status || 502, detail: result.text }), {
+        status: result.status || 502,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      });
+    }
 
+    // ekstrak teks jawaban
     let answer = "(no content)";
-    try{
-      const data = JSON.parse(txt);
+    try {
+      const data = JSON.parse(result.text);
       const parts = data?.candidates?.[0]?.content?.parts || [];
-      answer = parts.map((p:any)=>p?.text).filter(Boolean).join("") || answer;
-    }catch{ answer = txt || answer; }
+      answer = parts.map((p: any) => p?.text).filter(Boolean).join("") || answer;
+    } catch { answer = result.text || answer; }
 
-    return new Response(JSON.stringify({ answer }), { headers:{...corsHeaders(),"Content-Type":"application/json"} });
-  }catch(err:any){
-    return new Response(JSON.stringify({ error:"exception", message:String(err) }), { status:500, headers:{...corsHeaders(),"Content-Type":"application/json"} });
+    return new Response(JSON.stringify({ answer }), {
+      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+    });
+
+  } catch (err: any) {
+    return new Response(JSON.stringify({ error: "exception", message: String(err) }), {
+      status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" }
+    });
   }
 }
