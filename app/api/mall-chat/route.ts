@@ -96,7 +96,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const user =
-      typeof body?.user === "string" ? String(body.user) : "";
+      typeof body?.user === "string" ? String(body.user).slice(0, 800) : "";
     const system =
       typeof body?.system === "string" && body.system.trim()
         ? body.system
@@ -115,20 +115,15 @@ export async function POST(req: Request) {
       });
     }
 
-    // ==== Gemini v1 (camelCase fields) ====
+    // v1 endpoint + tanpa systemInstruction (gabungkan jadi satu prompt)
     const model = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
     const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
-    const payloadV1 = {
-      // v1 pakai camelCase: systemInstruction
-      systemInstruction: {
-        // Content object; role opsional di v1
-        parts: [{ text: system }],
-      },
+    const payload = {
       contents: [
         {
-          // user prompt
-          parts: [{ text: user.slice(0, 800) }],
+          // gabungkan system + user biar kompatibel di semua variant
+          parts: [{ text: `${system.trim()}\n\nUser:\n${user}` }],
         },
       ],
       generationConfig: { temperature: 0.2 },
@@ -137,13 +132,12 @@ export async function POST(req: Request) {
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payloadV1),
+      body: JSON.stringify(payload),
     });
 
     const raw = await resp.text();
 
     if (!resp.ok) {
-      // teruskan status & detail agar mudah debug dari Postman/Unity
       return new Response(
         JSON.stringify({ error: "upstream", status: resp.status, detail: raw }),
         {
@@ -153,7 +147,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Ambil teks jawaban dari candidates
+    // Ambil teks dari candidates
     let answer = "(no content)";
     try {
       const data = JSON.parse(raw);
@@ -167,7 +161,6 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify({ answer }), {
       headers: { ...corsHeaders(), "Content-Type": "application/json" },
     });
-    
   } catch (err: any) {
     return new Response(
       JSON.stringify({ error: "exception", message: String(err) }),
