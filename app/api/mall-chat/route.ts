@@ -80,89 +80,101 @@ Di luar scope: "Topik itu di luar materi kelas ini ya 😊."
 Ikuti bahasa penanya.
 `;
 
-function corsHeaders(origin="*"){ return {
-  "Access-Control-Allow-Origin": origin,
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};}
-
-export async function OPTIONS(){ return new Response(null,{ headers: corsHeaders() }); }
-
-// --- helper panggil Gemini dgn fallback model & versi ---
-async function callGemini(apiKey: string, user: string, system: string) {
-  // urutan yang paling sering berhasil sekarang
-  const candidates = [
-    { ver: "v1",     model: process.env.GEMINI_MODEL || "gemini-1.5-flash-latest" },
-    { ver: "v1",     model: "gemini-1.5-flash-002" },
-    { ver: "v1",     model: "gemini-1.5-pro-latest" },
-    { ver: "v1beta", model: "gemini-1.5-flash" }, // fallback lama
-  ];
-
-  const payload = {
-    system_instruction: { role: "system", parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: String(user).slice(0, 800) }] }],
-    generation_config: { temperature: 0.2 }
+function corsHeaders(origin = "*") {
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
+}
 
-  let last = { status: 0, body: "" };
-
-  for (const c of candidates) {
-    const url = `https://generativelanguage.googleapis.com/${c.ver}/models/${c.model}:generateContent?key=${apiKey}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const text = await r.text();
-    if (r.ok) return { ok: true, text };
-    last = { status: r.status, body: text };
-
-    // kalau 404 / NOT_FOUND, coba kandidat berikutnya
-    if (r.status !== 404 && !/NOT_FOUND/i.test(text)) break;
-  }
-  return { ok: false, text: last.body, status: last.status };
+export async function OPTIONS() {
+  return new Response(null, { headers: corsHeaders() });
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const user = typeof body.user === "string" ? body.user : "";
-    const system = (typeof body.system === "string" && body.system.trim()) ? body.system : SYS_PROMPT;
+    const user =
+      typeof body?.user === "string" ? String(body.user) : "";
+    const system =
+      typeof body?.system === "string" && body.system.trim()
+        ? body.system
+        : SYS_PROMPT;
 
     if (!user) {
       return new Response(JSON.stringify({ error: "Missing field: user" }), {
-        status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" }
+        status: 400,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
     }
     if (!process.env.GEMINI_API_KEY) {
       return new Response(JSON.stringify({ error: "No GEMINI_API_KEY set" }), {
-        status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" }
+        status: 500,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
     }
 
-    const result = await callGemini(process.env.GEMINI_API_KEY, user, system);
-    if (!result.ok) {
-      return new Response(JSON.stringify({ error: "upstream", status: result.status || 502, detail: result.text }), {
-        status: result.status || 502,
-        headers: { ...corsHeaders(), "Content-Type": "application/json" }
-      });
+    // ==== Gemini v1 (camelCase fields) ====
+    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+
+    const payloadV1 = {
+      // v1 pakai camelCase: systemInstruction
+      systemInstruction: {
+        // Content object; role opsional di v1
+        parts: [{ text: system }],
+      },
+      contents: [
+        {
+          // user prompt
+          parts: [{ text: user.slice(0, 800) }],
+        },
+      ],
+      generationConfig: { temperature: 0.2 },
+    };
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payloadV1),
+    });
+
+    const raw = await resp.text();
+
+    if (!resp.ok) {
+      // teruskan status & detail agar mudah debug dari Postman/Unity
+      return new Response(
+        JSON.stringify({ error: "upstream", status: resp.status, detail: raw }),
+        {
+          status: resp.status,
+          headers: { ...corsHeaders(), "Content-Type": "application/json" },
+        }
+      );
     }
 
-    // ekstrak teks jawaban
+    // Ambil teks jawaban dari candidates
     let answer = "(no content)";
     try {
-      const data = JSON.parse(result.text);
+      const data = JSON.parse(raw);
       const parts = data?.candidates?.[0]?.content?.parts || [];
-      answer = parts.map((p: any) => p?.text).filter(Boolean).join("") || answer;
-    } catch { answer = result.text || answer; }
+      answer =
+        parts.map((p: any) => p?.text).filter(Boolean).join("") || answer;
+    } catch {
+      answer = raw || answer;
+    }
 
     return new Response(JSON.stringify({ answer }), {
-      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      headers: { ...corsHeaders(), "Content-Type": "application/json" },
     });
-
+    
   } catch (err: any) {
-    return new Response(JSON.stringify({ error: "exception", message: String(err) }), {
-      status: 500, headers: { ...corsHeaders(), "Content-Type": "application/json" }
-    });
+    return new Response(
+      JSON.stringify({ error: "exception", message: String(err) }),
+      {
+        status: 500,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      }
+    );
   }
 }
