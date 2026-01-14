@@ -1,89 +1,24 @@
-// // app/api/mall-chat/route.ts
-// export const runtime = "edge"; // pakai Edge Runtime (cepat & murah)
-
-// const SYS_PROMPT = `
-// You are "Instruktur AI" untuk topik Metaverse & Oculus/VR.
-// Jawab ringkas (<= 90 kata), jelas, sopan, dan berbasis konsep/fakta.
-// Fokus: definisi metaverse; manfaat pendidikan/bisnis/hiburan; perangkat VR (Oculus/Quest);
-// cara kerja dasar (tracking/rendering); kenyamanan & keselamatan; workflow membuat world di Spatial;
-// aksesibilitas & kontrol. Hindari navigasi/rute dalam dunia.
-// Di luar scope: "Topik itu di luar materi kelas ini ya 😊."
-// Ikuti bahasa penanya.
-// `;
-
-// function corsHeaders(origin = "*") {
-//   return {
-//     "Access-Control-Allow-Origin": origin,
-//     "Access-Control-Allow-Methods": "POST, OPTIONS",
-//     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-//   };
-// }
-
-// export async function OPTIONS() {
-//   return new Response(null, { headers: corsHeaders() });
-// }
-
-// export async function POST(req: Request) {
-//   let body: any = {};
-//   try { body = await req.json(); } catch { 
-//     return new Response(JSON.stringify({ error: "Bad JSON" }), { status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" } });
-//   }
-//   const { user, system, sessionId = "" } = body || {};
-//   if (!user || typeof user !== "string") {
-//     return new Response(JSON.stringify({ error: "Missing field: user" }), { status: 400, headers: { ...corsHeaders(), "Content-Type": "application/json" } });
-//   }
-
-//   const finalSystem = (typeof system === "string" && system.trim().length > 0) ? system : SYS_PROMPT;
-//   const trimmedUser = String(user).slice(0, 600);
-
-//   const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-//     method: "POST",
-//     headers: {
-//       "Authorization": `Bearer ${process.env.OPENAI_API_KEY!}`,
-//       "Content-Type": "application/json"
-//     },
-//     body: JSON.stringify({
-//       model: "gpt-4o-mini",
-//       temperature: 0.2,
-//       messages: [
-//         { role: "system", content: finalSystem },
-//         // sessionId bisa dipakai untuk menyimpan riwayat di server kalau mau
-//         { role: "user", content: trimmedUser }
-//       ]
-//     })
-//   });
-
-//   if (!upstream.ok) {
-//     const detail = await upstream.text().catch(()=> "");
-//     return new Response(JSON.stringify({ error: "Upstream error", status: upstream.status, detail }), {
-//       status: 502, headers: { ...corsHeaders(), "Content-Type": "application/json" }
-//     });
-//   }
-
-//   const data = await upstream.json();
-//   const answer = data?.choices?.[0]?.message?.content || "(no content)";
-
-//   return new Response(JSON.stringify({ answer }), {
-//     headers: { ...corsHeaders(), "Content-Type": "application/json" }
-//   });
-// }
-
 export const runtime = "edge";
 
+/** Prompt dikunci di backend: santai, jelas, tanpa markdown/simbol. */
 const SYS_PROMPT = `
-You are "Instruktur AI" untuk topik Metaverse & Oculus/VR.
-Jawab ringkas (<= 90 kata), jelas, sopan, dan berbasis konsep/fakta.
-Fokus: definisi metaverse; manfaat pendidikan/bisnis/hiburan; perangkat VR (Oculus/Quest);
-cara kerja dasar; kenyamanan & keselamatan; workflow membuat world di Spatial; aksesibilitas & kontrol.
-Hindari navigasi/rute dalam dunia. Di luar lingkup: "Topik itu di luar materi kelas ini ya 😊."
-Ikuti bahasa penanya.
-`;
+@"Anda adalah Ade 'Instruktur AI' yang mengajar topik Metaverse untuk pemula-menengah dan Oculus.
+Gunakan bahasa Indonesia yang santai, tidak terlalu baku, tetap jelas. Jawab singkat (≈60-90 kata),
+kalimat pendek, tanpa markdown, tanpa tanda **, #, atau kode, tanpa emoji.
+Kalau perlu buat poin dengan awalan '• ' saja.
+Fokus: pengertian, manfaat, cara kerja dasar, kenyamanan/keamanan, langkah bikin world di Spatial, aksesibilitas & kontrol.
+Jangan kasih navigasi/rute di dunia. Jika pertanyaan di luar topik, bilang baik-baik.
+definisi metaverse, manfaat pendidikan/bisnis/hiburan, perangkat VR (Oculus/Quest), cara kerja dasar (tracking, rendering),
+kenyamanan & keselamatan (durasi singkat, kebersihan, area aman), workflow membuat world di Spatial (asset, lighting, publikasi),
+aksesibilitas & kontrol. Jika di luar lingkup, jawab: 'Topik itu di luar materi kelas ini ya.'
+Jika dia menyapa jawab sapaan dengan ramah. Jangan beri rute di dunia. jawab dengan mengikuti bahasa user`;
 
+/** CORS */
 function corsHeaders(origin = "*") {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, HTTP-Referer, X-Title",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, HTTP-Referer, Referer, X-Title",
   };
 }
 
@@ -91,7 +26,49 @@ export async function OPTIONS() {
   return new Response(null, { headers: corsHeaders() });
 }
 
-// panggil OpenRouter (OpenAI-compatible)
+/** Sanitizer server-side: buang tag reasoning, markdown, simbol "kotak", dll. */
+function sanitize(t: string): string {
+  if (!t) return t;
+  try {
+    t = t.normalize("NFKC");
+  } catch {}
+
+  // zero-width & control (kecuali CR/LF/TAB)
+  t = t.replace(/[\u200B-\u200F\u2028\u2029\u2060\uFEFF]/g, "");
+  t = t.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+  // reasoning & tokens
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  t = t.replace(/\[(?:\/)?[A-Z][A-Z0-9_\-]{1,}\]/gi, ""); // [OUT], [/OUT], dsb.
+
+  // markdown → plain
+  t = t.replace(/^\s*#{1,6}\s*/gm, "");
+  t = t.replace(/\*\*(.+?)\*\*/g, "$1");
+  t = t.replace(/(?<!\S)\*(.+?)\*(?!\S)/g, "$1");
+  t = t.replace(/_(.+?)_/g, "$1");
+  t = t.replace(/~~(.+?)~~/g, "$1");
+  t = t.replace(/`{1,3}([^`]+?)`{1,3}/g, "$1");
+  t = t.replace(/!\[[^\]]*\]\([^)]+\)/g, "");
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+  // bullets rapi
+  t = t.replace(/^\s*[-–]\s+/gm, "• ");
+  t = t.replace(/[•]\s{2,}/g, "• ");
+
+  // geometric shapes / box drawing / block elements (sumber "kotak")
+  t = t.replace(/[\u25A0-\u25FF]/g, "");
+  t = t.replace(/[\u2500-\u257F]/g, "");
+  t = t.replace(/[\u2580-\u259F]/g, "");
+  t = t.replace(/[□▢▣■▪▫]/g, "");
+
+  // spasi & baris
+  t = t.replace(/[ \t]{2,}/g, " ");
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  return t.trim();
+}
+
+/** Panggil OpenRouter (OpenAI-compatible) */
 async function callOpenRouter(opts: {
   apiKey: string;
   model: string;
@@ -103,21 +80,26 @@ async function callOpenRouter(opts: {
   const { apiKey, model, user, system, referer, title } = opts;
 
   const url = "https://openrouter.ai/api/v1/chat/completions";
-  const body = {
+  const body: any = {
     model,
     temperature: 0.2,
+    // cegah output token-template
+    stop: ["[OUT]", "[/OUT]", "<think>", "</think>", "```"],
     messages: [
       { role: "system", content: system },
-      { role: "user", content: String(user).slice(0, 800) }
-    ]
+      { role: "user", content: String(user).slice(0, 800) },
+    ],
   };
 
   const headers: Record<string, string> = {
-    "Authorization": `Bearer ${apiKey}`,
+    Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
   };
-  if (referer) headers["HTTP-Referer"] = referer;
-  if (title)   headers["X-Title"] = title;
+  if (referer) {
+    headers["HTTP-Referer"] = referer;
+    headers["Referer"] = referer; // beberapa gateway cek header ini
+  }
+  if (title) headers["X-Title"] = title;
 
   const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
   const text = await r.text();
@@ -128,12 +110,11 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const user = typeof body?.user === "string" ? body.user : "";
-    const system = (typeof body?.system === "string" && body.system.trim()) ? body.system : SYS_PROMPT;
 
     if (!user) {
       return new Response(JSON.stringify({ error: "Missing field: user" }), {
         status: 400,
-        headers: { ...corsHeaders(), "Content-Type": "application/json" }
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
     }
 
@@ -141,56 +122,62 @@ export async function POST(req: Request) {
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "No OPENROUTER_API_KEY set" }), {
         status: 500,
-        headers: { ...corsHeaders(), "Content-Type": "application/json" }
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
     }
 
+    // Prompt dikunci di sini — abaikan body.system dari client
+    const system = SYS_PROMPT;
+
     const prefer = process.env.OPENROUTER_MODEL || "qwen/qwen-2.5-7b-instruct:free";
     const referer = process.env.OPENROUTER_REFERRER || "https://backend-malltekno.vercel.app";
-    const title   = "MallTekno AI";
+    const title = "MallTekno AI";
 
-    // fallback list kalau model prefer tidak tersedia
     const fallbacks = [
       prefer,
       "google/gemma-2-9b-it:free",
       "mistralai/mistral-7b-instruct:free",
-      "deepseek/deepseek-r1:free"
+      "deepseek/deepseek-r1:free",
     ];
 
     let last = { ok: false, status: 0, text: "" };
     for (const model of fallbacks) {
       const res = await callOpenRouter({ apiKey, model, user, system, referer, title });
-      if (res.ok) { last = res; break; }
+      if (res.ok) {
+        last = res;
+        break;
+      }
       last = res;
-      // Jika 404 model tidak ditemukan → coba berikutnya; kalau 401/429/5xx biasanya berhenti saja.
-      if (res.status !== 404) break;
+      if (res.status !== 404) break; // selain 404 biasanya berhenti
     }
 
     if (!last.ok) {
-      return new Response(JSON.stringify({ error: "upstream", status: last.status || 502, detail: last.text }), {
-        status: last.status || 502,
-        headers: { ...corsHeaders(), "Content-Type": "application/json" }
-      });
+      return new Response(
+        JSON.stringify({ error: "upstream", status: last.status || 502, detail: last.text }),
+        {
+          status: last.status || 502,
+          headers: { ...corsHeaders(), "Content-Type": "application/json" },
+        }
+      );
     }
 
-    // parse jawaban
+    // parse & bersihkan jawaban
     let answer = "(no content)";
     try {
       const data = JSON.parse(last.text);
-      // OpenRouter (OpenAI-compatible): choices[0].message.content
       answer = data?.choices?.[0]?.message?.content || answer;
     } catch {
       answer = last.text || answer;
     }
+    answer = sanitize(answer);
 
     return new Response(JSON.stringify({ answer }), {
-      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      headers: { ...corsHeaders(), "Content-Type": "application/json" },
     });
-
   } catch (err: any) {
     return new Response(JSON.stringify({ error: "exception", message: String(err) }), {
       status: 500,
-      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+      headers: { ...corsHeaders(), "Content-Type": "application/json" },
     });
   }
 }
