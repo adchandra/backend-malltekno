@@ -151,7 +151,7 @@ export async function POST(req: Request) {
         break;
       }
       last = res;
-      if (res.status !== 404) break; // selain 404 biasanya berhenti
+      if (![404, 429].includes(res.status)) break; 
     }
 
     if (!last.ok) {
