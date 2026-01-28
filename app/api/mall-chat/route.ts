@@ -31,7 +31,7 @@ function sanitize(t: string): string {
   if (!t) return t;
   try {
     t = t.normalize("NFKC");
-  } catch {}
+  } catch { }
 
   // zero-width & control (kecuali CR/LF/TAB)
   t = t.replace(/[\u200B-\u200F\u2028\u2029\u2060\uFEFF]/g, "");
@@ -134,11 +134,14 @@ export async function POST(req: Request) {
     const title = "MallTekno AI";
 
     const fallbacks = [
-      prefer,
-      "google/gemma-2-9b-it:free",
-      "mistralai/mistral-7b-instruct:free",
-      "deepseek/deepseek-r1:free",
+      "google/gemini-2.0-flash-exp:free",
+      "z-ai/glm-4.5-air:free",
+      "openai/gpt-oss-20b:free",
+      "google/gemma-3-27b-it:free",
+      "meta-llama/llama-3.3-70b-instruct:free",
+      "tngtech/deepseek-r1t2-chimera:free"
     ];
+
 
     let last = { ok: false, status: 0, text: "" };
     for (const model of fallbacks) {
